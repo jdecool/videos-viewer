@@ -16,6 +16,10 @@ import (
 	"strings"
 )
 
+const (
+	viewedVideosFile = "viewed_videos.json"
+)
+
 type VideoFile struct {
 	Name   string
 	Path   string
@@ -30,6 +34,26 @@ type TemplateData struct {
 	FolderName       string
 }
 
+func loadViewedVideos(path string) (map[string]bool, error) {
+	viewedVideos := make(map[string]bool)
+
+	jsonData, err := os.ReadFile(filepath.Join(path, viewedVideosFile))
+	if err != nil {
+		return viewedVideos, nil
+	}
+
+	var savedVideos []VideoFile
+	if err := json.Unmarshal(jsonData, &savedVideos); err != nil {
+		return nil, err
+	}
+
+	for _, v := range savedVideos {
+		viewedVideos[v.Name] = v.Viewed
+	}
+
+	return viewedVideos, nil
+}
+
 func main() {
 	port := flag.String("port", "8080", "port to listen on")
 	flag.Parse()
@@ -42,6 +66,34 @@ func main() {
 	path := os.Args[1]
 	folderName := filepath.Base(path)
 
+	videoFiles, err := loadVideoFiles(path)
+	if err != nil {
+		log.Fatalf("Error loading video files: %v", err)
+
+	}
+
+	tmpl := createTemplate()
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		handleRoot(w, r, path, videoFiles, folderName, tmpl)
+	})
+
+	http.HandleFunc("/watch/", func(w http.ResponseWriter, r *http.Request) {
+		handleWatch(w, r, videoFiles, folderName, tmpl, path)
+	})
+
+	http.HandleFunc("/unview/", func(w http.ResponseWriter, r *http.Request) {
+		handleUnview(w, r, videoFiles, path)
+	})
+
+	http.HandleFunc("/video/", func(w http.ResponseWriter, r *http.Request) {
+		handleVideo(w, r, videoFiles)
+	})
+
+	fmt.Printf("Starting server at http://localhost:%s\n", *port)
+	log.Fatal(http.ListenAndServe(":"+*port, nil))
+}
+
+func loadVideoFiles(path string) ([]VideoFile, error) {
 	videoExtensions := map[string]bool{
 		".mp4":  true,
 		".avi":  true,
@@ -54,55 +106,46 @@ func main() {
 
 	var videoFiles []VideoFile
 
-	// Load viewed videos from JSON if it exists
-	viewedVideos := make(map[string]bool)
-	if jsonData, err := os.ReadFile(path + "/viewed_videos.json"); err == nil {
-		var savedVideos []VideoFile
-		if err := json.Unmarshal(jsonData, &savedVideos); err == nil {
-			for _, v := range savedVideos {
-				viewedVideos[v.Name] = v.Viewed
-			}
-		}
+	viewedVideos, err := loadViewedVideos(path)
+	if err != nil {
+		return nil, err
 	}
 
-	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	err = filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
 			return err
 		}
-		if !info.IsDir() {
-			ext := strings.ToLower(filepath.Ext(path))
-			if videoExtensions[ext] {
-				base := filepath.Base(path)
-				// Check if filename matches pattern "[number] - [name].[ext]"
-				if parts := strings.Split(base, " - "); len(parts) == 2 {
-					if num := strings.TrimSpace(parts[0]); num != "" {
-						videoFiles = append(videoFiles, VideoFile{
-							Name:   base,
-							Path:   path,
-							Viewed: viewedVideos[base],
-						})
-					}
-				}
+
+		ext := strings.ToLower(filepath.Ext(path))
+		if videoExtensions[ext] {
+			base := filepath.Base(path)
+			if parts := strings.Split(base, " - "); len(parts) == 2 {
+				videoFiles = append(videoFiles, VideoFile{
+					Name:   base,
+					Path:   path,
+					Viewed: viewedVideos[base],
+				})
 			}
 		}
+
 		return nil
 	})
 
 	if err != nil {
-		fmt.Printf("Error walking through directory: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	sort.Slice(videoFiles, func(i, j int) bool {
-		numI := strings.Split(videoFiles[i].Name, " - ")[0]
-		numJ := strings.Split(videoFiles[j].Name, " - ")[0]
+		numI, _ := strconv.Atoi(strings.TrimSpace(strings.Split(videoFiles[i].Name, " - ")[0]))
+		numJ, _ := strconv.Atoi(strings.TrimSpace(strings.Split(videoFiles[j].Name, " - ")[0]))
 
-		iNum, _ := strconv.Atoi(strings.TrimSpace(numI))
-		jNum, _ := strconv.Atoi(strings.TrimSpace(numJ))
-		return iNum < jNum
+		return numI < numJ
 	})
 
-	// Create HTML template
+	return videoFiles, nil
+}
+
+func createTemplate() *template.Template {
 	tmpl := `
 <!DOCTYPE html>
 <html>
@@ -227,129 +270,116 @@ func main() {
     </div>
 </body>
 </html>`
-	t := template.Must(template.New("videoList").Parse(tmpl))
 
-	// Handle root path - redirect to first video if available
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
+	return template.Must(template.New("videoList").Parse(tmpl))
+}
+
+func handleRoot(w http.ResponseWriter, r *http.Request, path string, videoFiles []VideoFile, folderName string, tmpl *template.Template) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	data := TemplateData{
+		ReadmeContent: readReadmeFile(path),
+		Videos:        videoFiles,
+		FolderName:    folderName,
+	}
+
+	tmpl.Execute(w, data)
+}
+
+func handleWatch(w http.ResponseWriter, r *http.Request, videoFiles []VideoFile, folderName string, tmpl *template.Template, path string) {
+	fileName := strings.TrimPrefix(r.URL.Path, "/watch/")
+
+	var currentVideo *VideoFile
+	for _, video := range videoFiles {
+		if video.Name == fileName {
+			currentVideo = &video
+			break
+		}
+	}
+
+	if r.URL.Query().Get("ended") != "" && currentVideo != nil {
+		markVideoAsViewed(r.URL.Query().Get("ended"), videoFiles, path)
+	}
+
+	data := TemplateData{
+		Videos:           videoFiles,
+		CurrentVideo:     fileName,
+		CurrentVideoFile: currentVideo,
+		FolderName:       folderName,
+	}
+
+	tmpl.Execute(w, data)
+}
+
+func markVideoAsViewed(endedFilename string, videoFiles []VideoFile, path string) {
+	for i := range videoFiles {
+		if videoFiles[i].Name == endedFilename {
+			videoFiles[i].Viewed = true
+			saveViewedVideos(videoFiles, path)
+			break
+		}
+	}
+}
+
+func saveViewedVideos(videoFiles []VideoFile, path string) {
+	jsonData, err := json.Marshal(videoFiles)
+	if err != nil {
+		log.Printf("Error marshaling video files: %v", err)
+		return
+	}
+
+	prettyJSON := &bytes.Buffer{}
+	if err := json.Indent(prettyJSON, jsonData, "", "    "); err == nil {
+		err = os.WriteFile(filepath.Join(path, viewedVideosFile), prettyJSON.Bytes(), 0644)
+		if err != nil {
+			log.Printf("Error saving viewed videos: %v", err)
 			return
 		}
-		data := TemplateData{
-			ReadmeContent: readReadmeFile(path),
-			Videos:        videoFiles,
-			FolderName:    folderName,
+	}
+}
+
+func handleUnview(w http.ResponseWriter, r *http.Request, videoFiles []VideoFile, path string) {
+	fileName := strings.TrimPrefix(r.URL.Path, "/unview/")
+	for i := range videoFiles {
+		if videoFiles[i].Name == fileName {
+			videoFiles[i].Viewed = false
+			saveViewedVideos(videoFiles, path)
+			redirectAfterUnview(w, r)
+			return
 		}
-		t.Execute(w, data)
-	})
+	}
 
-	// Handle watch path
-	http.HandleFunc("/watch/", func(w http.ResponseWriter, r *http.Request) {
-		fileName := strings.TrimPrefix(r.URL.Path, "/watch/")
-		var currentVideo *VideoFile
-		for _, video := range videoFiles {
-			if video.Name == fileName {
-				currentVideo = &video
-				break
-			}
+	http.NotFound(w, r)
+}
+
+func redirectAfterUnview(w http.ResponseWriter, r *http.Request) {
+	referer := r.Header.Get("Referer")
+	if referer != "" {
+		if refererURL, err := url.Parse(referer); err == nil {
+			q := refererURL.Query()
+			q.Del("ended")
+			refererURL.RawQuery = q.Encode()
+			http.Redirect(w, r, refererURL.String(), http.StatusSeeOther)
+			return
 		}
+	}
 
-		// Check if video was marked as ended
-		if r.URL.Query().Get("ended") != "" && currentVideo != nil {
-			endedFilename := r.URL.Query().Get("ended")
-			// Mark video as viewed and persist to file
-			for i := range videoFiles {
-				if videoFiles[i].Name == endedFilename {
-					videoFiles[i].Viewed = true
-					// Save updated video files to JSON file
-					jsonData, err := json.Marshal(videoFiles)
-					if err != nil {
-						log.Printf("Error marshaling video files: %v", err)
-					} else {
-						prettyJSON := &bytes.Buffer{}
-						if err := json.Indent(prettyJSON, jsonData, "", "    "); err == nil {
-							err = os.WriteFile(path+"/viewed_videos.json", prettyJSON.Bytes(), 0644)
-						}
-						if err != nil {
-							log.Printf("Error saving viewed videos: %v", err)
-						}
-					}
-					break
-				}
-			}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func handleVideo(w http.ResponseWriter, r *http.Request, videoFiles []VideoFile) {
+	fileName := strings.TrimPrefix(r.URL.Path, "/video/")
+	for _, video := range videoFiles {
+		if video.Name == fileName {
+			http.ServeFile(w, r, video.Path)
+			return
 		}
+	}
 
-		data := TemplateData{
-			Videos:           videoFiles,
-			CurrentVideo:     fileName,
-			CurrentVideoFile: currentVideo,
-			FolderName:       folderName,
-		}
-		t.Execute(w, data)
-	})
-
-	// Handle unview path
-	http.HandleFunc("/unview/", func(w http.ResponseWriter, r *http.Request) {
-		fileName := strings.TrimPrefix(r.URL.Path, "/unview/")
-		// Remove ended query parameter if present
-		if endedParam := r.URL.Query().Get("ended"); endedParam != "" {
-			fileName = strings.TrimSuffix(fileName, "?ended="+endedParam)
-		}
-
-		for i := range videoFiles {
-			if videoFiles[i].Name == fileName {
-				videoFiles[i].Viewed = false
-				// Save updated video files to JSON file
-				jsonData, err := json.Marshal(videoFiles)
-				if err != nil {
-					log.Printf("Error marshaling video files: %v", err)
-					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-					return
-				}
-				prettyJSON := &bytes.Buffer{}
-				if err := json.Indent(prettyJSON, jsonData, "", "    "); err == nil {
-					err = os.WriteFile(path+"/viewed_videos.json", prettyJSON.Bytes(), 0644)
-				}
-				if err != nil {
-					log.Printf("Error saving viewed videos: %v", err)
-					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-					return
-				}
-
-				// Get referer URL and remove any ended query parameter
-				referer := r.Header.Get("Referer")
-				if referer != "" {
-					if refererURL, err := url.Parse(referer); err == nil {
-						q := refererURL.Query()
-						q.Del("ended")
-						refererURL.RawQuery = q.Encode()
-						http.Redirect(w, r, refererURL.String(), http.StatusSeeOther)
-						return
-					}
-				}
-
-				// Fallback to home if no valid referer
-				http.Redirect(w, r, "/", http.StatusSeeOther)
-				return
-			}
-		}
-		http.NotFound(w, r)
-	})
-
-	// Handle video files
-	http.HandleFunc("/video/", func(w http.ResponseWriter, r *http.Request) {
-		fileName := strings.TrimPrefix(r.URL.Path, "/video/")
-		for _, video := range videoFiles {
-			if video.Name == fileName {
-				http.ServeFile(w, r, video.Path)
-				return
-			}
-		}
-		http.NotFound(w, r)
-	})
-
-	fmt.Printf("Starting server at http://localhost:%s\n", *port)
-	log.Fatal(http.ListenAndServe(":"+*port, nil))
+	http.NotFound(w, r)
 }
 
 func readReadmeFile(basePath string) string {
@@ -361,7 +391,7 @@ func readReadmeFile(basePath string) string {
 	}
 
 	for _, path := range readmePaths {
-		content, err := os.ReadFile(basePath + "/" + path)
+		content, err := os.ReadFile(filepath.Join(basePath, path))
 		if err == nil {
 			return string(content)
 		}
