@@ -14,16 +14,22 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	viewedVideosFile = "viewed_videos.json"
+	videoDataFile = "video_data.json"
 )
 
 type VideoFile struct {
+	// File information
 	Name   string
 	Path   string
 	Viewed bool
+
+	// User progression information
+	Current  time.Time
+	Progress float64
 }
 
 type TemplateData struct {
@@ -37,7 +43,7 @@ type TemplateData struct {
 func loadViewedVideos(path string) (map[string]bool, error) {
 	viewedVideos := make(map[string]bool)
 
-	jsonData, err := os.ReadFile(filepath.Join(path, viewedVideosFile))
+	jsonData, err := os.ReadFile(filepath.Join(path, videoDataFile))
 	if err != nil {
 		return viewedVideos, nil
 	}
@@ -69,8 +75,9 @@ func main() {
 	videoFiles, err := loadVideoFiles(path)
 	if err != nil {
 		log.Fatalf("Error loading video files: %v", err)
-
 	}
+
+	saveViewedVideos(videoFiles, path)
 
 	tmpl := createTemplate()
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +94,10 @@ func main() {
 
 	http.HandleFunc("/video/", func(w http.ResponseWriter, r *http.Request) {
 		handleVideo(w, r, videoFiles)
+	})
+
+	http.HandleFunc("/update-progress/", func(w http.ResponseWriter, r *http.Request) {
+		handleUpdateProgress(w, r, path)
 	})
 
 	fmt.Printf("Starting server at http://localhost:%s\n", *port)
@@ -239,6 +250,21 @@ func createTemplate() *template.Template {
                     }
                 });
         }
+        
+        let time = 0;
+        function updateProgress(videoName, exactTime) {
+            const current = Math.floor(exactTime);
+            if (current === time) {
+                return;
+            }
+
+            time = current;
+            if (time % 10 !== 0) {
+                return;
+            }
+
+            fetch('/update-progress/' + videoName + '/' + exactTime);
+        }
     </script>
 </head>
 <body>
@@ -257,7 +283,7 @@ func createTemplate() *template.Template {
         {{if .CurrentVideoFile}}
         <div class="video-container">
             <h1>{{.CurrentVideoFile.Name}}</h1>
-            <video width="100%" controls onended="onVideoEnded()">
+            <video width="100%" controls onended="onVideoEnded()" ontimeupdate="updateProgress('{{.CurrentVideoFile.Name}}', this.currentTime)">
                 <source src="/video/{{.CurrentVideoFile.Name}}" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
@@ -318,6 +344,9 @@ func markVideoAsViewed(endedFilename string, videoFiles []VideoFile, path string
 	for i := range videoFiles {
 		if videoFiles[i].Name == endedFilename {
 			videoFiles[i].Viewed = true
+			videoFiles[i].Current = time.Now()
+			videoFiles[i].Progress = 0
+
 			saveViewedVideos(videoFiles, path)
 			break
 		}
@@ -333,7 +362,7 @@ func saveViewedVideos(videoFiles []VideoFile, path string) {
 
 	prettyJSON := &bytes.Buffer{}
 	if err := json.Indent(prettyJSON, jsonData, "", "    "); err == nil {
-		err = os.WriteFile(filepath.Join(path, viewedVideosFile), prettyJSON.Bytes(), 0644)
+		err = os.WriteFile(filepath.Join(path, videoDataFile), prettyJSON.Bytes(), 0644)
 		if err != nil {
 			log.Printf("Error saving viewed videos: %v", err)
 			return
@@ -380,6 +409,35 @@ func handleVideo(w http.ResponseWriter, r *http.Request, videoFiles []VideoFile)
 	}
 
 	http.NotFound(w, r)
+}
+
+func handleUpdateProgress(w http.ResponseWriter, r *http.Request, path string) {
+	parts := strings.Split(r.URL.Path, "/")
+	progress, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	if err != nil {
+		log.Printf("Invalid progress vaule: %v", err)
+		http.Error(w, "Invalid progress value", http.StatusBadRequest)
+		return
+	}
+
+	videoFiles, err := loadVideoFiles(path)
+	if err != nil {
+		log.Printf("Error loading video progress: %v", err)
+		http.Error(w, "Error loading video progress", http.StatusInternalServerError)
+		return
+	}
+
+	fileName := parts[len(parts)-2]
+	for k, video := range videoFiles {
+		if video.Name == fileName {
+			videoFiles[k].Current = time.Now()
+			videoFiles[k].Progress = progress
+			saveViewedVideos(videoFiles, path)
+			break
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func readReadmeFile(basePath string) string {
