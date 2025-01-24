@@ -40,8 +40,8 @@ type TemplateData struct {
 	FolderName       string
 }
 
-func loadViewedVideos(path string) (map[string]bool, error) {
-	viewedVideos := make(map[string]bool)
+func loadViewedVideos(path string) (map[string]VideoFile, error) {
+	viewedVideos := make(map[string]VideoFile)
 
 	jsonData, err := os.ReadFile(filepath.Join(path, videoDataFile))
 	if err != nil {
@@ -54,7 +54,7 @@ func loadViewedVideos(path string) (map[string]bool, error) {
 	}
 
 	for _, v := range savedVideos {
-		viewedVideos[v.Name] = v.Viewed
+		viewedVideos[v.Name] = v
 	}
 
 	return viewedVideos, nil
@@ -76,8 +76,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error loading video files: %v", err)
 	}
-
-	saveViewedVideos(videoFiles, path)
 
 	tmpl := createTemplate()
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -131,11 +129,14 @@ func loadVideoFiles(path string) ([]VideoFile, error) {
 		if videoExtensions[ext] {
 			base := filepath.Base(path)
 			if parts := strings.Split(base, " - "); len(parts) == 2 {
-				videoFiles = append(videoFiles, VideoFile{
-					Name:   base,
-					Path:   path,
-					Viewed: viewedVideos[base],
-				})
+				videoFile := VideoFile{
+					Name:     base,
+					Path:     path,
+					Viewed:   viewedVideos[base].Viewed,
+					Current:  viewedVideos[base].Current,
+					Progress: viewedVideos[base].Progress,
+				}
+				videoFiles = append(videoFiles, videoFile)
 			}
 		}
 
