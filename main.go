@@ -288,6 +288,7 @@ func createTemplate() *template.Template {
                 <source src="/video/{{.CurrentVideoFile.Name}}" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
+            <button onclick="onVideoEnded()">Next Video</button>
             <script>
                 document.querySelector('video').addEventListener('loadedmetadata', function() {
                     this.currentTime = {{.CurrentVideoFile.Progress}};
