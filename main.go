@@ -140,16 +140,14 @@ func loadVideoFiles(path string) ([]VideoFile, error) {
 		ext := strings.ToLower(filepath.Ext(path))
 		if videoExtensions[ext] {
 			base := filepath.Base(path)
-			if parts := strings.Split(base, " - "); len(parts) == 2 {
-				videoFile := VideoFile{
-					Name:     base,
-					Path:     path,
-					Viewed:   viewedVideos[base].Viewed,
-					Current:  viewedVideos[base].Current,
-					Progress: viewedVideos[base].Progress,
-				}
-				videoFiles = append(videoFiles, videoFile)
+			videoFile := VideoFile{
+				Name:     base,
+				Path:     path,
+				Viewed:   viewedVideos[base].Viewed,
+				Current:  viewedVideos[base].Current,
+				Progress: viewedVideos[base].Progress,
 			}
+			videoFiles = append(videoFiles, videoFile)
 		}
 
 		return nil
