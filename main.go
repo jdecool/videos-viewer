@@ -21,6 +21,10 @@ const (
 	videoDataFile = "video_data.json"
 )
 
+var (
+	isDebugMode bool
+)
+
 type VideoFile struct {
 	// File information
 	Name   string
@@ -61,16 +65,24 @@ func loadViewedVideos(path string) (map[string]VideoFile, error) {
 }
 
 func main() {
-	port := flag.String("port", "8080", "port to listen on")
+	var port string
+	flag.StringVar(&port, "port", "8080", "port to listen on")
+	flag.BoolVar(&isDebugMode, "debug", false, "enable debug mode")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] <directory_path>\n\nOptions:\n", filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
-	if len(os.Args) != 2 {
-		fmt.Printf("Usage: %s <directory_path>\n", filepath.Base(os.Args[0]))
+	if len(flag.Args()) != 1 {
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	path := os.Args[1]
+	path := flag.Arg(0)
 	folderName := filepath.Base(path)
+
+	debug("Load \"%s\"", path)
 
 	videoFiles, err := loadVideoFiles(path)
 	if err != nil {
@@ -98,8 +110,8 @@ func main() {
 		handleUpdateProgress(w, r, path)
 	})
 
-	fmt.Printf("Starting server at http://localhost:%s\n", *port)
-	log.Fatal(http.ListenAndServe(":"+*port, nil))
+	fmt.Printf("Starting server at http://localhost:%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func loadVideoFiles(path string) ([]VideoFile, error) {
@@ -463,4 +475,12 @@ func readReadmeFile(basePath string) string {
 	}
 
 	return ""
+}
+
+func debug(format string, v ...any) {
+	if !isDebugMode {
+		return
+	}
+
+	log.Printf(format, v...)
 }
